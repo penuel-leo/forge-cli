@@ -14,7 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 normalize_name() {
-    echo "$1" | tr '[:lower:]' '[:upper:]' | tr '-.' '__' | sed 's/[^A-Z0-9_]//g'
+    echo "$1" | tr '[:lower:]' '[:upper:]' | sed 's/[-.]/_/g; s/[^A-Z0-9_]//g'
 }
 
 extract_from_remote() {
