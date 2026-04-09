@@ -13,38 +13,68 @@ Before executing any platform commands, check and install CLI dependencies:
 
 ```bash
 # Detect OS and install GitLab CLI (glab) if missing
+#!/bin/bash
+
+# Detect OS and install GitLab CLI (glab) if missing
 if ! command -v glab >/dev/null 2>&1; then
   case "$(uname -s)" in
-    Darwin)  brew install glab ;;
+    Darwin)  
+      brew install glab 
+      ;;
     Linux)
       if command -v apt-get >/dev/null 2>&1; then
-        curl -fsSL https://gitlab.com/gitlab-org/cli/-/releases/latest/downloads/glab_linux_amd64.deb -o /tmp/glab.deb && sudo dpkg -i /tmp/glab.deb && rm /tmp/glab.deb
+        # Use official GitLab CLI apt repository
+        curl -sL https://packages.gitlab.com/install/repositories/gitlab/gitlab-cli/script.deb.sh | sudo bash
+        sudo apt-get install -y glab
       elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y 'https://gitlab.com/gitlab-org/cli/-/releases/latest/downloads/glab_linux_amd64.rpm'
+        # Use official GitLab CLI rpm repository
+        curl -sL https://packages.gitlab.com/install/repositories/gitlab/gitlab-cli/script.rpm.sh | sudo bash
+        sudo dnf install -y glab
       else
-        curl -fsSL https://gitlab.com/gitlab-org/cli/-/releases/latest/downloads/glab_linux_amd64.tar.gz | tar xz -C /usr/local/bin glab
-      fi ;;
-    MINGW*|MSYS*|CYGWIN*) winget install --id GitLab.glab -e || scoop install glab ;;
+        # Fallback: dynamically fetch latest version from API to avoid 404
+        GLAB_VER=$(curl -s "https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases" | grep -o '"tag_name":"[^"]*"' | head -n 1 | cut -d'"' -f4 | sed 's/^v//')
+        curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VER}/downloads/glab_${GLAB_VER}_Linux_x86_64.tar.gz" -o /tmp/glab.tar.gz
+        tar -xzf /tmp/glab.tar.gz -C /tmp bin/glab
+        sudo mv /tmp/bin/glab /usr/local/bin/glab
+        rm -rf /tmp/glab.tar.gz /tmp/bin
+      fi 
+      ;;
+    MINGW*|MSYS*|CYGWIN*) 
+      winget install --id GitLab.glab -e || scoop install glab 
+      ;;
   esac
 fi
 
 # Detect OS and install GitHub CLI (gh) if missing
 if ! command -v gh >/dev/null 2>&1; then
   case "$(uname -s)" in
-    Darwin)  brew install gh ;;
+    Darwin)  
+      brew install gh 
+      ;;
     Linux)
       if command -v apt-get >/dev/null 2>&1; then
+        # GitHub's official apt repository setup
         (type -p wget >/dev/null || sudo apt-get install wget -y) \
           && sudo mkdir -p -m 755 /etc/apt/keyrings \
           && wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
           && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
           && sudo apt-get update && sudo apt-get install gh -y
       elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y 'https://github.com/cli/cli/releases/latest/download/gh_linux_amd64.rpm'
+        # Use official GitHub CLI rpm repository
+        sudo dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+        sudo dnf install -y gh
       else
-        curl -fsSL https://github.com/cli/cli/releases/latest/download/gh_linux_amd64.tar.gz | tar xz -C /usr/local/bin --strip-components=2 '*/bin/gh'
-      fi ;;
-    MINGW*|MSYS*|CYGWIN*) winget install --id GitHub.cli -e || scoop install gh ;;
+        # Fallback: dynamically fetch latest version from API to avoid 404
+        GH_VER=$(curl -s "https://api.github.com/repos/cli/cli/releases/latest" | grep -o '"tag_name": "[^"]*"' | head -n 1 | cut -d'"' -f4 | sed 's/^v//')
+        curl -fsSL "https://github.com/cli/cli/releases/latest/download/gh_${GH_VER}_linux_amd64.tar.gz" -o /tmp/gh.tar.gz
+        tar -xzf /tmp/gh.tar.gz -C /tmp
+        sudo mv /tmp/gh_${GH_VER}_linux_amd64/bin/gh /usr/local/bin/gh
+        rm -rf /tmp/gh.tar.gz /tmp/gh_${GH_VER}_linux_amd64
+      fi 
+      ;;
+    MINGW*|MSYS*|CYGWIN*) 
+      winget install --id GitHub.cli -e || scoop install gh 
+      ;;
   esac
 fi
 
@@ -70,13 +100,21 @@ Run detection: `scripts/detect-platform.sh`
 
 ## Token Resolution
 
-Tokens are resolved hierarchically per platform. See [config/token-resolver.md](config/token-resolver.md).
+Tokens are resolved in strict priority order. See [config/token-resolver.md](config/token-resolver.md) for full details.
 
-**GitLab:** `GITLAB_TOKEN_<PROJECT>` → `GITLAB_TOKEN_<WORKSPACE>` → `GITLAB_TOKEN_<HOST>` → `GITLAB_TOKEN` → `glab config`
+**Priority (highest → lowest):**
 
-**GitHub:** `GITHUB_TOKEN_<PROJECT>` → `GITHUB_TOKEN_<WORKSPACE>` → `GITHUB_TOKEN` → `gh auth token`
+1. `--token <pat>` — explicit argument (BYOK / external platform integration)
+2. `FORGE_TOKEN` — universal env var override
+3. `GITLAB_TOKEN_<PROJECT>` / `GITHUB_TOKEN_<PROJECT>` — project-specific
+4. `GITLAB_TOKEN_<WORKSPACE>` / `GITHUB_TOKEN_<WORKSPACE>` — workspace/org level
+5. `GITLAB_TOKEN_<HOST>` — per-instance (GitLab only)
+6. `GITLAB_TOKEN` / `GITHUB_TOKEN` — global default
+7. `glab config` / `gh auth token` — CLI stored credential
 
-Supports multiple instances simultaneously — the correct token is selected based on the current repo's remote URL.
+**Platform detection:** `--platform gitlab|github` > `--host <hostname>` > `GITLAB_HOST`/`GITHUB_HOST` env var > git remote URL auto-detection.
+
+Supports multiple instances simultaneously — the correct token is selected based on explicit arguments or the current repo's remote URL.
 
 ## Platform Sub-skills
 
@@ -115,8 +153,22 @@ See [platforms/github/PLATFORM.md](platforms/github/PLATFORM.md) for full detail
 ## Quick Start
 
 ```bash
-# Detect platform
+# Auto-detect platform from git remote
 scripts/detect-platform.sh
+
+# Explicit platform (no git repo needed)
+scripts/detect-platform.sh --platform gitlab
+scripts/detect-platform.sh --host gitlab.company.com
+
+# Resolve token — BYOK with explicit PAT
+scripts/resolve-token.sh --token glpat-xxx --platform gitlab
+scripts/resolve-token.sh --token ghp-xxx --platform github --host ghe.company.com
+
+# Resolve token — env var
+FORGE_TOKEN=glpat-xxx scripts/resolve-token.sh --platform gitlab
+
+# Resolve token — auto-detect (inside a git repo)
+scripts/resolve-token.sh
 
 # GitLab workflow
 glab mr create --fill --draft
